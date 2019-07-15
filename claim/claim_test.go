@@ -17,6 +17,8 @@ func TestNew(t *testing.T) {
 	assert.Equal(t, "my_claim", claim.Name, "Name is set")
 	assert.Equal(t, "unknown", claim.Result.Status)
 	assert.Equal(t, "unknown", claim.Result.Action)
+	assert.Equal(t, map[string]interface{}{}, claim.Parameters)
+	assert.Equal(t, map[string]string{}, claim.Outputs)
 }
 
 func TestUpdate(t *testing.T) {

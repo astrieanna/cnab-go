@@ -27,6 +27,7 @@ import (
 const (
 	k8sContainerName    = "invocation"
 	k8sFileSecretVolume = "files"
+	k8sOutputVolume     = "outputs"
 )
 
 // Driver runs an invocation image in a Kubernetes cluster.
@@ -120,9 +121,9 @@ func (k *Driver) setClient(conf *rest.Config) error {
 }
 
 // Run executes the operation inside of the invocation image.
-func (k *Driver) Run(op *driver.Operation) error {
+func (k *Driver) Run(op *driver.Operation) (driver.OperationResult, error) {
 	if k.Namespace == "" {
-		return fmt.Errorf("KUBE_NAMESPACE is required")
+		return driver.OperationResult{}, fmt.Errorf("KUBE_NAMESPACE is required")
 	}
 	labelMap := generateLabels(op)
 	meta := metav1.ObjectMeta{
@@ -171,7 +172,7 @@ func (k *Driver) Run(op *driver.Operation) error {
 		secret.ObjectMeta.GenerateName += "env-"
 		envsecret, err := k.secrets.Create(secret)
 		if err != nil {
-			return err
+			return driver.OperationResult{}, err
 		}
 		if !k.SkipCleanup {
 			defer k.deleteSecret(envsecret.ObjectMeta.Name)
@@ -197,7 +198,7 @@ func (k *Driver) Run(op *driver.Operation) error {
 		}
 		secret, err := k.secrets.Create(secret)
 		if err != nil {
-			return err
+			return driver.OperationResult{}, err
 		}
 		if !k.SkipCleanup {
 			defer k.deleteSecret(secret.ObjectMeta.Name)
@@ -214,10 +215,23 @@ func (k *Driver) Run(op *driver.Operation) error {
 		container.VolumeMounts = mounts
 	}
 
+	if len(op.Outputs) > 0 {
+		job.Spec.Template.Spec.Volumes = append(job.Spec.Template.Spec.Volumes, v1.Volume{
+			Name: k8sOutputVolume,
+			VolumeSource: v1.VolumeSource{
+				EmptyDir: &v1.EmptyDirVolumeSource{},
+			},
+		})
+		container.VolumeMounts = append(container.VolumeMounts, v1.VolumeMount{
+			Name:      k8sOutputVolume,
+			MountPath: "/cnab/app/outputs",
+		})
+	}
+
 	job.Spec.Template.Spec.Containers = []v1.Container{container}
 	job, err := k.jobs.Create(job)
 	if err != nil {
-		return err
+		return driver.OperationResult{}, err
 	}
 	if !k.SkipCleanup {
 		defer k.deleteJob(job.ObjectMeta.Name)
@@ -226,14 +240,49 @@ func (k *Driver) Run(op *driver.Operation) error {
 	// Return early for unit testing purposes (the fake k8s client implementation just
 	// hangs during watch because no events are ever created on the Job)
 	if k.skipJobStatusCheck {
-		return nil
+		return driver.OperationResult{}, nil
 	}
 
 	selector := metav1.ListOptions{
 		LabelSelector: labels.Set(job.ObjectMeta.Labels).String(),
 	}
+	err = k.watchJobStatusAndLogs(selector, op.Out)
 
-	return k.watchJobStatusAndLogs(selector, op.Out)
+	if len(op.Outputs) > 0 {
+		// TODO figure out how to pull the current value of the output files out
+
+		// Plan A:
+		// Sidecar Container gets Service Account token to write secrets
+		// Sidecar container writes a secret with all output files
+		// Here: read contents of files from secret
+		// Problems: requires creating a service account with these permissions,
+		// assumes this driver has those permissions on this namespace.
+
+		// Plan B:
+		// Sidecar Container is a file server
+		// We request each file from the sidecar -- like http.Get("sidecar-url/outputs/myfile")
+		// Problems: securing/authenticating the connection; can we even connect to the running pods like this?
+
+		// Plan C:
+		// Sidecar container just keeps pod running
+		// Here: we kubectl exec into container to retrieve the files
+		// Problems: can we kubectl exec in the API? where?
+		// Major issue: Job assumes Pod will finish; Pod waits on Container(s);
+		// this would make a container not finish -- we'd have to restructure a LOT.
+
+		// Plan D:
+		// Sidecar container reads in output files.
+		// Sidecar contaienr writes files in a special format to its stdout.
+		// Here: we pick up the logged output of this container.
+		// Problems: picking a good format, complicates log stream logic, seems ugly
+
+		// Plan E:
+		// Use a persistent volume to store the output file contents
+		// Read from the persistent volume to return the output content
+		// Problems: K8s cluster requires persistent volume for output support
+	}
+
+	return driver.OperationResult{}, err
 }
 
 func (k *Driver) watchJobStatusAndLogs(selector metav1.ListOptions, out io.Writer) error {
@@ -301,6 +350,7 @@ func (k *Driver) streamPodLogs(options metav1.ListOptions, out io.Writer, done c
 				// The event was for a pod whose logs have already been streamed, so do nothing.
 				continue
 			}
+			// TODO below only gets invocation logs; Plan D requires sidecar output logs
 			req := k.pods.GetLogs(podName, &v1.PodLogOptions{
 				Container: k8sContainerName,
 				Follow:    true,

@@ -41,6 +41,7 @@ type Claim struct {
 	Modified      time.Time                 `json:"modified"`
 	Bundle        *bundle.Bundle            `json:"bundle"`
 	Result        Result                    `json:"result"`
+	Outputs       map[string]string         `json:"outputs"`
 	Parameters    map[string]interface{}    `json:"parameters"`
 	Files         map[string]string         `json:"files"`
 	RelocationMap bundle.ImageRelocationMap `json:"relocationMap"`
@@ -66,6 +67,7 @@ func New(name string) (*Claim, error) {
 			Action: ActionUnknown,
 			Status: StatusUnknown,
 		},
+		Outputs:       map[string]string{},
 		Parameters:    map[string]interface{}{},
 		RelocationMap: bundle.ImageRelocationMap{},
 	}, nil
