@@ -19,8 +19,17 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-type mockFailingDriver struct {
+type mockDriver struct {
 	shouldHandle bool
+	Result       driver.OperationResult
+	Error        error
+}
+
+func (d *mockDriver) Handles(imageType string) bool {
+	return d.shouldHandle
+}
+func (d *mockDriver) Run(op *driver.Operation) (driver.OperationResult, error) {
+	return d.Result, d.Error
 }
 
 var mockSet = credentials.Set{
@@ -28,11 +37,16 @@ var mockSet = credentials.Set{
 	"secret_two": "I'm also a secret",
 }
 
-func (d *mockFailingDriver) Handles(imageType string) bool {
-	return d.shouldHandle
-}
-func (d *mockFailingDriver) Run(op *driver.Operation) error {
-	return errors.New("I always fail")
+func newClaim() *claim.Claim {
+	now := time.Now()
+	return &claim.Claim{
+		Created:    now,
+		Modified:   now,
+		Name:       "name",
+		Revision:   "revision",
+		Bundle:     mockBundle(),
+		Parameters: map[string]interface{}{},
+	}
 }
 
 func mockBundle() *bundle.Bundle {
@@ -72,6 +86,13 @@ func mockBundle() *bundle.Bundle {
 				Default: "three",
 			},
 		},
+		Outputs: &bundle.OutputsDefinition{
+			Fields: map[string]bundle.OutputDefinition{
+				"some-output": {
+					Path: "/tmp/some/path",
+				},
+			},
+		},
 		Parameters: &bundle.ParametersDefinition{
 			Fields: map[string]bundle.ParameterDefinition{
 				"param_one": {
@@ -107,18 +128,11 @@ func mockBundle() *bundle.Bundle {
 }
 
 func TestOpFromClaim(t *testing.T) {
-	now := time.Now()
-	c := &claim.Claim{
-		Created:  now,
-		Modified: now,
-		Name:     "name",
-		Revision: "revision",
-		Bundle:   mockBundle(),
-		Parameters: map[string]interface{}{
-			"param_one":   "oneval",
-			"param_two":   "twoval",
-			"param_three": "threeval",
-		},
+	c := newClaim()
+	c.Parameters = map[string]interface{}{
+		"param_one":   "oneval",
+		"param_two":   "twoval",
+		"param_three": "threeval",
 	}
 	invocImage := c.Bundle.InvocationImages[0]
 
@@ -139,6 +153,7 @@ func TestOpFromClaim(t *testing.T) {
 	is.Equal(op.Files["/secret/two"], "I'm also a secret")
 	is.Equal(op.Files["/param/three"], "threeval")
 	is.Contains(op.Files, "/cnab/app/image-map.json")
+	is.Contains(op.Outputs, "/tmp/some/path")
 	var imgMap map[string]bundle.Image
 	is.NoError(json.Unmarshal([]byte(op.Files["/cnab/app/image-map.json"]), &imgMap))
 	is.Equal(c.Bundle.Images, imgMap)
@@ -147,16 +162,9 @@ func TestOpFromClaim(t *testing.T) {
 }
 
 func TestOpFromClaim_NoParameter(t *testing.T) {
-	now := time.Now()
-	b := mockBundle()
-	b.Parameters = nil
-	c := &claim.Claim{
-		Created:  now,
-		Modified: now,
-		Name:     "name",
-		Revision: "revision",
-		Bundle:   b,
-	}
+	c := newClaim()
+	c.Bundle = mockBundle()
+	c.Bundle.Parameters = nil
 	invocImage := c.Bundle.InvocationImages[0]
 
 	op, err := opFromClaim(claim.ActionInstall, stateful, c, invocImage, mockSet, os.Stdout)
@@ -179,20 +187,14 @@ func TestOpFromClaim_NoParameter(t *testing.T) {
 	is.Len(op.Parameters, 0)
 	is.Equal(os.Stdout, op.Out)
 }
+
 func TestOpFromClaim_UndefinedParams(t *testing.T) {
-	now := time.Now()
-	c := &claim.Claim{
-		Created:  now,
-		Modified: now,
-		Name:     "name",
-		Revision: "revision",
-		Bundle:   mockBundle(),
-		Parameters: map[string]interface{}{
-			"param_one":         "oneval",
-			"param_two":         "twoval",
-			"param_three":       "threeval",
-			"param_one_million": "this is not a valid parameter",
-		},
+	c := newClaim()
+	c.Parameters = map[string]interface{}{
+		"param_one":         "oneval",
+		"param_two":         "twoval",
+		"param_three":       "threeval",
+		"param_one_million": "this is not a valid parameter",
 	}
 	invocImage := c.Bundle.InvocationImages[0]
 
@@ -201,22 +203,14 @@ func TestOpFromClaim_UndefinedParams(t *testing.T) {
 }
 
 func TestOpFromClaim_MissingRequiredParameter(t *testing.T) {
-	now := time.Now()
-	b := mockBundle()
-	b.Parameters.Required = []string{"param_one"}
-	b.Parameters.Fields["param_one"] = bundle.ParameterDefinition{}
-
-	c := &claim.Claim{
-		Created:  now,
-		Modified: now,
-		Name:     "name",
-		Revision: "revision",
-		Bundle:   b,
-		Parameters: map[string]interface{}{
-			"param_two":   "twoval",
-			"param_three": "threeval",
-		},
+	c := newClaim()
+	c.Parameters = map[string]interface{}{
+		"param_two":   "twoval",
+		"param_three": "threeval",
 	}
+	c.Bundle = mockBundle()
+	c.Bundle.Parameters.Required = []string{"param_one"}
+	c.Bundle.Parameters.Fields["param_one"] = bundle.ParameterDefinition{}
 	invocImage := c.Bundle.InvocationImages[0]
 
 	// missing required parameter fails
@@ -230,25 +224,18 @@ func TestOpFromClaim_MissingRequiredParameter(t *testing.T) {
 }
 
 func TestOpFromClaim_MissingRequiredParamSpecificToAction(t *testing.T) {
-	now := time.Now()
-	b := mockBundle()
+	c := newClaim()
+	c.Parameters = map[string]interface{}{
+		"param_one":   "oneval",
+		"param_two":   "twoval",
+		"param_three": "threeval",
+	}
+	c.Bundle = mockBundle()
 	// Add a required parameter only defined for the test action
-	b.Parameters.Fields["param_test"] = bundle.ParameterDefinition{
+	c.Bundle.Parameters.Fields["param_test"] = bundle.ParameterDefinition{
 		ApplyTo: []string{"test"},
 	}
-	b.Parameters.Required = []string{"param_test"}
-	c := &claim.Claim{
-		Created:  now,
-		Modified: now,
-		Name:     "name",
-		Revision: "revision",
-		Bundle:   b,
-		Parameters: map[string]interface{}{
-			"param_one":   "oneval",
-			"param_two":   "twoval",
-			"param_three": "threeval",
-		},
-	}
+	c.Bundle.Parameters.Required = []string{"param_test"}
 	invocImage := c.Bundle.InvocationImages[0]
 
 	// calling install action without the test required parameter for test action is ok
@@ -283,7 +270,7 @@ func TestSelectInvocationImage_DriverIncompatible(t *testing.T) {
 	c := &claim.Claim{
 		Bundle: mockBundle(),
 	}
-	_, err := selectInvocationImage(&mockFailingDriver{}, c)
+	_, err := selectInvocationImage(&mockDriver{Error: errors.New("I always fail")}, c)
 	if err == nil {
 		t.Fatal("expected an error")
 	}
