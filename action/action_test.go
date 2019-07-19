@@ -161,6 +161,33 @@ func TestOpFromClaim(t *testing.T) {
 	is.Equal(os.Stdout, op.Out)
 }
 
+func TestOpFromClaim_NoOutputsOnBundle(t *testing.T) {
+	c := newClaim()
+	c.Bundle = mockBundle()
+	c.Bundle.Outputs = nil
+	invocImage := c.Bundle.InvocationImages[0]
+
+	op, err := opFromClaim(claim.ActionInstall, stateful, c, invocImage, mockSet, os.Stdout)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	is := assert.New(t)
+
+	is.Equal(c.Name, op.Installation)
+	is.Equal(c.Revision, op.Revision)
+	is.Equal(invocImage.Image, op.Image)
+	is.Equal(driver.ImageTypeDocker, op.ImageType)
+	is.Equal(op.Environment["SECRET_ONE"], "I'm a secret")
+	is.Equal(op.Files["/secret/two"], "I'm also a secret")
+	is.Contains(op.Files, "/cnab/app/image-map.json")
+	var imgMap map[string]bundle.Image
+	is.NoError(json.Unmarshal([]byte(op.Files["/cnab/app/image-map.json"]), &imgMap))
+	is.Equal(c.Bundle.Images, imgMap)
+	is.Len(op.Parameters, 0)
+	is.Equal(os.Stdout, op.Out)
+}
+
 func TestOpFromClaim_NoParameter(t *testing.T) {
 	c := newClaim()
 	c.Bundle = mockBundle()
