@@ -17,6 +17,7 @@ var _ Action = &Upgrade{}
 func TestUpgrade_Run(t *testing.T) {
 	out := ioutil.Discard
 
+	// happy path
 	c := newClaim()
 	upgr := &Upgrade{Driver: &mockDriver{
 		shouldHandle: true,
@@ -34,6 +35,22 @@ func TestUpgrade_Run(t *testing.T) {
 	assert.Equal(t, claim.StatusSuccess, c.Result.Status)
 	assert.Equal(t, map[string]string{"some-output": "SOME CONTENT"}, c.Outputs)
 
+	// when there are no outputs in the bundle
+	c = newClaim()
+	c.Bundle.Outputs = nil
+	upgr = &Upgrade{Driver: &mockDriver{
+		shouldHandle: true,
+		Result:       driver.OperationResult{},
+		Error:        nil,
+	}}
+	err = upgr.Run(c, mockSet, out)
+	assert.NoError(t, err)
+	assert.NotEqual(t, c.Created, c.Modified, "Claim was not updated with modified time stamp during upgrade action")
+	assert.Equal(t, claim.ActionUpgrade, c.Result.Action)
+	assert.Equal(t, claim.StatusSuccess, c.Result.Status)
+	assert.Empty(t, c.Outputs)
+
+	// error case: driver doesn't handle image
 	c = newClaim()
 	upgr = &Upgrade{Driver: &mockDriver{
 		Error:        errors.New("I always fail"),
@@ -43,6 +60,7 @@ func TestUpgrade_Run(t *testing.T) {
 	assert.Error(t, err)
 	assert.Empty(t, c.Outputs)
 
+	// error case: driver does handle image
 	c = newClaim()
 	upgr = &Upgrade{Driver: &mockDriver{
 		Error:        errors.New("I always fail"),

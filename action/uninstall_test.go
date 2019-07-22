@@ -17,6 +17,7 @@ var _ Action = &Uninstall{}
 func TestUninstall_Run(t *testing.T) {
 	out := ioutil.Discard
 
+	// happy path
 	c := newClaim()
 	uninst := &Uninstall{
 		Driver: &mockDriver{
@@ -36,6 +37,24 @@ func TestUninstall_Run(t *testing.T) {
 	assert.Equal(t, claim.StatusSuccess, c.Result.Status, "Claim result status not successfully updated.")
 	assert.Equal(t, map[string]string{"some-output": "SOME CONTENT"}, c.Outputs)
 
+	// when there are no outputs in the bundle
+	c = newClaim()
+	c.Bundle.Outputs = nil
+	uninst = &Uninstall{
+		Driver: &mockDriver{
+			shouldHandle: true,
+			Result:       driver.OperationResult{},
+			Error:        nil,
+		},
+	}
+	err = uninst.Run(c, mockSet, out)
+	assert.NoError(t, err)
+	assert.NotEqual(t, c.Created, c.Modified, "Claim was not updated with modified time stamp during uninstall after uninstall action")
+	assert.Equal(t, claim.ActionUninstall, c.Result.Action, "Claim result action not successfully updated.")
+	assert.Equal(t, claim.StatusSuccess, c.Result.Status, "Claim result status not successfully updated.")
+	assert.Empty(t, c.Outputs)
+
+	// error case: driver doesn't handle image
 	c = newClaim()
 	uninst = &Uninstall{Driver: &mockDriver{
 		Error:        errors.New("I always fail"),
@@ -45,6 +64,7 @@ func TestUninstall_Run(t *testing.T) {
 	assert.Error(t, err)
 	assert.Empty(t, c.Outputs)
 
+	// error case: driver does handle image
 	c = newClaim()
 	uninst = &Uninstall{Driver: &mockDriver{
 		Result: driver.OperationResult{
